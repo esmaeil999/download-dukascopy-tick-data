@@ -16,7 +16,7 @@ on:
       to:
         description: "End date YYYY-MM-DD"
         required: true
-        default: "2025-01-02"
+        default: "2026-01-01"
 
 permissions:
   contents: write
