@@ -1,0 +1,212 @@
+name: Download Dukascopy Tick Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      instrument:
+        description: "Instrument (EURUSD, GBPUSD, USDJPY, XAUUSD)"
+        required: true
+        default: "EURUSD"
+
+      from:
+        description: "Start date YYYY-MM-DD"
+        required: true
+        default: "2025-01-01"
+
+      to:
+        description: "End date YYYY-MM-DD"
+        required: true
+        default: "2025-01-02"
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare inputs
+        id: meta
+        shell: bash
+        env:
+          RAW_INSTRUMENT: ${{ inputs.instrument }}
+          RAW_FROM: ${{ inputs.from }}
+          RAW_TO: ${{ inputs.to }}
+        run: |
+          set -e
+
+          # Convert instrument to uppercase
+          # eurusd -> EURUSD
+          # EurUsd -> EURUSD
+          # EURUSD -> EURUSD
+
+          INSTRUMENT=$(printf '%s' "$RAW_INSTRUMENT" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+
+          FROM_DATE=$(printf '%s' "$RAW_FROM" | cut -d' ' -f1)
+          TO_DATE=$(printf '%s' "$RAW_TO" | cut -d' ' -f1)
+
+          # dukascopy-node expects lowercase instrument
+          INSTRUMENT_LOWER=$(printf '%s' "$INSTRUMENT" | tr '[:upper:]' '[:lower:]')
+
+          SLUG="${INSTRUMENT_LOWER}-ticks-${FROM_DATE}-to-${TO_DATE}"
+
+          echo "================================"
+          echo "Instrument: $INSTRUMENT"
+          echo "Dukascopy symbol: $INSTRUMENT_LOWER"
+          echo "From: $FROM_DATE"
+          echo "To: $TO_DATE"
+          echo "Slug: $SLUG"
+          echo "================================"
+
+          echo "instrument=$INSTRUMENT_LOWER" >> "$GITHUB_OUTPUT"
+          echo "instrument_upper=$INSTRUMENT" >> "$GITHUB_OUTPUT"
+          echo "from_date=$FROM_DATE" >> "$GITHUB_OUTPUT"
+          echo "to_date=$TO_DATE" >> "$GITHUB_OUTPUT"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Download ticks
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p download
+
+          echo "Downloading Dukascopy tick data..."
+
+          npx -y dukascopy-node \
+            -i "${{ steps.meta.outputs.instrument }}" \
+            -from "${{ steps.meta.outputs.from_date }}" \
+            -to "${{ steps.meta.outputs.to_date }}" \
+            -t tick \
+            -f csv \
+            -dir "./download"
+
+      - name: Find downloaded CSV
+        shell: bash
+        run: |
+          set -e
+
+          echo "================================"
+          echo "Downloaded files:"
+          echo "================================"
+
+          find download -type f -print
+
+          CSV_FILE=$(find download -type f -name "*.csv" | head -n 1)
+
+          if [ -z "$CSV_FILE" ]; then
+            echo "ERROR: No CSV file was downloaded."
+            exit 1
+          fi
+
+          echo "================================"
+          echo "CSV found:"
+          echo "$CSV_FILE"
+          echo "================================"
+
+          cp "$CSV_FILE" "${{ steps.meta.outputs.slug }}.csv"
+
+          ls -lh "${{ steps.meta.outputs.slug }}.csv"
+
+      - name: Convert CSV to JForex format
+        shell: bash
+        run: |
+          set -e
+
+          INPUT_FILE="${{ steps.meta.outputs.slug }}.csv"
+
+          if [ ! -f "$INPUT_FILE" ]; then
+            echo "ERROR: CSV file not found:"
+            echo "$INPUT_FILE"
+            exit 1
+          fi
+
+          echo "Converting CSV..."
+
+          python convert.py "$INPUT_FILE"
+
+      - name: Zip CSV
+        shell: bash
+        run: |
+          set -e
+
+          CSV_FILE="${{ steps.meta.outputs.slug }}.csv"
+          ZIP_FILE="${{ steps.meta.outputs.slug }}.zip"
+
+          if [ ! -f "$CSV_FILE" ]; then
+            echo "ERROR: CSV file not found:"
+            echo "$CSV_FILE"
+            exit 1
+          fi
+
+          echo "Creating ZIP..."
+
+          zip -9 -j "$ZIP_FILE" "$CSV_FILE"
+
+          echo "ZIP created:"
+          ls -lh "$ZIP_FILE"
+
+      - name: Split ZIP if larger than 1.9GB
+        shell: bash
+        run: |
+          set -e
+
+          FILE="${{ steps.meta.outputs.slug }}.zip"
+
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: ZIP file not found:"
+            echo "$FILE"
+            exit 1
+          fi
+
+          SIZE=$(stat -c%s "$FILE")
+
+          LIMIT=$((1900 * 1024 * 1024))
+
+          echo "ZIP size: $SIZE bytes"
+          echo "Limit: $LIMIT bytes"
+
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+
+            echo "ZIP is larger than 1.9GB."
+            echo "Splitting ZIP..."
+
+            split -b 1900M "$FILE" "${FILE}."
+
+            rm "$FILE"
+
+            echo "Created parts:"
+            ls -lh "${FILE}".*
+
+          else
+
+            echo "ZIP is smaller than 1.9GB."
+            echo "No splitting required."
+
+          fi
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.slug }}
+          name: ${{ steps.meta.outputs.instrument_upper }} ticks ${{ steps.meta.outputs.from_date }} to ${{ steps.meta.outputs.to_date }}
+          generate_release_notes: false
+          files: |
+            ./${{ steps.meta.outputs.slug }}.zip
+            ./${{ steps.meta.outputs.slug }}.zip.*
