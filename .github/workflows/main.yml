@@ -11,202 +11,325 @@ on:
       from:
         description: "Start date YYYY-MM-DD"
         required: true
-        default: "2025-01-01"
+        default: "2020-01-01"
 
       to:
         description: "End date YYYY-MM-DD"
         required: true
-        default: "2026-01-01"
+        default: "2025-12-31"
 
 permissions:
   contents: write
 
 jobs:
-  download:
+
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    outputs:
+      instrument: ${{ steps.meta.outputs.instrument }}
+      instrument_upper: ${{ steps.meta.outputs.instrument_upper }}
+      from_date: ${{ steps.meta.outputs.from_date }}
+      to_date: ${{ steps.meta.outputs.to_date }}
+      years: ${{ steps.meta.outputs.years }}
 
     steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Prepare inputs
+      - name: Prepare inputs and year list
         id: meta
         shell: bash
         env:
           RAW_INSTRUMENT: ${{ inputs.instrument }}
           RAW_FROM: ${{ inputs.from }}
           RAW_TO: ${{ inputs.to }}
-        run: |
-          set -e
 
-          # Convert instrument to uppercase
-          # eurusd -> EURUSD
-          # EurUsd -> EURUSD
-          # EURUSD -> EURUSD
+        run: |
+          set -euo pipefail
 
           INSTRUMENT=$(printf '%s' "$RAW_INSTRUMENT" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+          INSTRUMENT_LOWER=$(printf '%s' "$INSTRUMENT" | tr '[:upper:]' '[:lower:]')
 
           FROM_DATE=$(printf '%s' "$RAW_FROM" | cut -d' ' -f1)
           TO_DATE=$(printf '%s' "$RAW_TO" | cut -d' ' -f1)
 
-          # dukascopy-node expects lowercase instrument
-          INSTRUMENT_LOWER=$(printf '%s' "$INSTRUMENT" | tr '[:upper:]' '[:lower:]')
+          FROM_YEAR=$(date -d "$FROM_DATE" +%Y)
+          TO_YEAR=$(date -d "$TO_DATE" +%Y)
 
-          SLUG="${INSTRUMENT_LOWER}-ticks-${FROM_DATE}-to-${TO_DATE}"
+          YEARS="["
+          FIRST=1
 
-          echo "================================"
-          echo "Instrument: $INSTRUMENT"
-          echo "Dukascopy symbol: $INSTRUMENT_LOWER"
-          echo "From: $FROM_DATE"
-          echo "To: $TO_DATE"
-          echo "Slug: $SLUG"
-          echo "================================"
+          for ((y=FROM_YEAR;y<=TO_YEAR;y++)); do
+            if [ $FIRST -eq 1 ]; then
+              YEARS="${YEARS}\"${y}\""
+              FIRST=0
+            else
+              YEARS="${YEARS},\"${y}\""
+            fi
+          done
 
-          echo "instrument=$INSTRUMENT_LOWER" >> "$GITHUB_OUTPUT"
-          echo "instrument_upper=$INSTRUMENT" >> "$GITHUB_OUTPUT"
-          echo "from_date=$FROM_DATE" >> "$GITHUB_OUTPUT"
-          echo "to_date=$TO_DATE" >> "$GITHUB_OUTPUT"
-          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          YEARS="${YEARS}]"
+
+          echo "instrument=$INSTRUMENT_LOWER" >> $GITHUB_OUTPUT
+          echo "instrument_upper=$INSTRUMENT" >> $GITHUB_OUTPUT
+          echo "from_date=$FROM_DATE" >> $GITHUB_OUTPUT
+          echo "to_date=$TO_DATE" >> $GITHUB_OUTPUT
+          echo "years=$YEARS" >> $GITHUB_OUTPUT
+
+
+  download-year:
+
+    needs: prepare
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 350
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        year: ${{ fromJson(needs.prepare.outputs.years) }}
+
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      - name: Calculate year range
+        id: range
+        shell: bash
+
+        env:
+          OVERALL_FROM: ${{ needs.prepare.outputs.from_date }}
+          OVERALL_TO: ${{ needs.prepare.outputs.to_date }}
+          YEAR: ${{ matrix.year }}
+
+        run: |
+
+          set -euo pipefail
+
+          YEAR_START="${YEAR}-01-01"
+          YEAR_END="${YEAR}-12-31"
+
+
+          if [[ "$(date -d "$OVERALL_FROM" +%Y)" -eq "$YEAR" ]]; then
+            FROM_DATE="$OVERALL_FROM"
+          else
+            FROM_DATE="$YEAR_START"
+          fi
+
+
+          if [[ "$(date -d "$OVERALL_TO" +%Y)" -eq "$YEAR" ]]; then
+            TO_DATE="$OVERALL_TO"
+          else
+            TO_DATE="$YEAR_END"
+          fi
+
+
+          INSTRUMENT="${{ needs.prepare.outputs.instrument }}"
+
+          SLUG="${INSTRUMENT}-ticks-${FROM_DATE}-to-${TO_DATE}"
+
+
+          echo "from_date=$FROM_DATE" >> $GITHUB_OUTPUT
+          echo "to_date=$TO_DATE" >> $GITHUB_OUTPUT
+          echo "slug=$SLUG" >> $GITHUB_OUTPUT
+          echo "instrument=$INSTRUMENT" >> $GITHUB_OUTPUT
+          echo "instrument_upper=${{ needs.prepare.outputs.instrument_upper }}" >> $GITHUB_OUTPUT
+
+
 
       - name: Download ticks
+
         shell: bash
+
         run: |
-          set -e
+
+          set -euo pipefail
 
           mkdir -p download
 
-          echo "Downloading Dukascopy tick data..."
 
           npx -y dukascopy-node \
-            -i "${{ steps.meta.outputs.instrument }}" \
-            -from "${{ steps.meta.outputs.from_date }}" \
-            -to "${{ steps.meta.outputs.to_date }}" \
+            -i "${{ steps.range.outputs.instrument }}" \
+            -from "${{ steps.range.outputs.from_date }}" \
+            -to "${{ steps.range.outputs.to_date }}" \
             -t tick \
             -f csv \
             -dir "./download"
 
+
+
       - name: Find downloaded CSV
+
         shell: bash
+
         run: |
-          set -e
 
-          echo "================================"
-          echo "Downloaded files:"
-          echo "================================"
-
-          find download -type f -print
+          set -euo pipefail
 
           CSV_FILE=$(find download -type f -name "*.csv" | head -n 1)
 
           if [ -z "$CSV_FILE" ]; then
-            echo "ERROR: No CSV file was downloaded."
             exit 1
           fi
 
-          echo "================================"
-          echo "CSV found:"
-          echo "$CSV_FILE"
-          echo "================================"
 
-          cp "$CSV_FILE" "${{ steps.meta.outputs.slug }}.csv"
+          cp "$CSV_FILE" "${{ steps.range.outputs.slug }}.csv"
 
-          ls -lh "${{ steps.meta.outputs.slug }}.csv"
+
 
       - name: Convert CSV to JForex format
+
         shell: bash
+
         run: |
-          set -e
 
-          INPUT_FILE="${{ steps.meta.outputs.slug }}.csv"
+          python convert.py "${{ steps.range.outputs.slug }}.csv"
 
-          if [ ! -f "$INPUT_FILE" ]; then
-            echo "ERROR: CSV file not found:"
-            echo "$INPUT_FILE"
-            exit 1
-          fi
 
-          echo "Converting CSV..."
-
-          python convert.py "$INPUT_FILE"
 
       - name: Zip CSV
+
         shell: bash
+
         run: |
-          set -e
 
-          CSV_FILE="${{ steps.meta.outputs.slug }}.csv"
-          ZIP_FILE="${{ steps.meta.outputs.slug }}.zip"
+          zip -9 -j \
+          "${{ steps.range.outputs.slug }}.zip" \
+          "${{ steps.range.outputs.slug }}.csv"
 
-          if [ ! -f "$CSV_FILE" ]; then
-            echo "ERROR: CSV file not found:"
-            echo "$CSV_FILE"
-            exit 1
-          fi
 
-          echo "Creating ZIP..."
-
-          zip -9 -j "$ZIP_FILE" "$CSV_FILE"
-
-          echo "ZIP created:"
-          ls -lh "$ZIP_FILE"
 
       - name: Split ZIP if larger than 1.9GB
+
         shell: bash
+
         run: |
-          set -e
 
-          FILE="${{ steps.meta.outputs.slug }}.zip"
-
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: ZIP file not found:"
-            echo "$FILE"
-            exit 1
-          fi
+          FILE="${{ steps.range.outputs.slug }}.zip"
 
           SIZE=$(stat -c%s "$FILE")
 
           LIMIT=$((1900 * 1024 * 1024))
 
-          echo "ZIP size: $SIZE bytes"
-          echo "Limit: $LIMIT bytes"
 
           if [ "$SIZE" -gt "$LIMIT" ]; then
-
-            echo "ZIP is larger than 1.9GB."
-            echo "Splitting ZIP..."
 
             split -b 1900M "$FILE" "${FILE}."
 
             rm "$FILE"
 
-            echo "Created parts:"
-            ls -lh "${FILE}".*
-
-          else
-
-            echo "ZIP is smaller than 1.9GB."
-            echo "No splitting required."
-
           fi
 
+
+
       - name: Publish to GitHub Release
+
         uses: softprops/action-gh-release@v2
+
         with:
-          tag_name: ${{ steps.meta.outputs.slug }}
-          name: ${{ steps.meta.outputs.instrument_upper }} ticks ${{ steps.meta.outputs.from_date }} to ${{ steps.meta.outputs.to_date }}
+
+          tag_name: ${{ steps.range.outputs.slug }}
+
+          name: ${{ steps.range.outputs.instrument_upper }} ticks ${{ steps.range.outputs.from_date }} to ${{ steps.range.outputs.to_date }}
+
           generate_release_notes: false
+
           files: |
-            ./${{ steps.meta.outputs.slug }}.zip
-            ./${{ steps.meta.outputs.slug }}.zip.*
+
+            ./${{ steps.range.outputs.slug }}.zip
+
+            ./${{ steps.range.outputs.slug }}.zip.*
+
+
+
+      - name: Send Release link to Telegram
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          REPO: ${{ github.repository }}
+
+          TAG: ${{ steps.range.outputs.slug }}
+
+          SYMBOL: ${{ steps.range.outputs.instrument_upper }}
+
+          FROM_DATE: ${{ steps.range.outputs.from_date }}
+
+          TO_DATE: ${{ steps.range.outputs.to_date }}
+
+
+        run: |
+
+          set -euo pipefail
+
+
+          RELEASE=$(gh api \
+          repos/$REPO/releases/tags/$TAG)
+
+
+          DOWNLOAD_URL=$(echo "$RELEASE" | jq -r '.assets[0].browser_download_url')
+
+
+          SIZE=$(echo "$RELEASE" | jq '[.assets[].size] | add')
+
+
+          SIZE_MB=$(awk "BEGIN {printf \"%.0f\", $SIZE/1024/1024}")
+
+
+          TEXT="📦 <b>${SYMBOL} Tick Data</b>%0A"
+          TEXT+="━━━━━━━━━━━━━━━━%0A"
+          TEXT+="📅 ${FROM_DATE} → ${TO_DATE}%0A"
+          TEXT+="💾 Size: ${SIZE_MB} MB"
+
+
+          KEYBOARD=$(jq -n \
+          --arg url "$DOWNLOAD_URL" \
+          '{
+            inline_keyboard:
+            [
+              [
+                {
+                  text:"⬇️ DOWNLOAD",
+                  url:$url
+                }
+              ]
+            ]
+          }')
+
+
+          curl -sS \
+          -X POST \
+          "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "$(jq -n \
+          --arg chat "$TELEGRAM_CHAT_ID" \
+          --arg text "$TEXT" \
+          --argjson kb "$KEYBOARD" \
+          '{
+            chat_id:$chat,
+            text:$text,
+            parse_mode:"HTML",
+            disable_web_page_preview:true,
+            reply_markup:$kb
+          }')"
