@@ -33,6 +33,7 @@ jobs:
           RELEASES=$(gh api \
           repos/$REPO/releases \
           --paginate)
+          -F per_page=100)
 
 
           echo "$RELEASES" | jq -c 'reverse[]' | while read RELEASE
@@ -67,7 +68,6 @@ jobs:
 
 
             TEXT="📦 <b>${SYMBOL} Tick Data</b>%0A"
-            TEXT+="━━━━━━━━━━━━━━━━%0A"
             TEXT+="📅 ${FROM} → ${TO}%0A"
             TEXT+="💾 Size: ${SIZE_MB} MB"
 
@@ -102,6 +102,9 @@ jobs:
               disable_web_page_preview:true,
               reply_markup:$kb
             }')"
+
+
+            sleep 3
 
 
           done
