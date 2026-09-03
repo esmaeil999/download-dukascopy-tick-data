@@ -7,28 +7,21 @@ permissions:
   contents: write
 
 jobs:
-
   send-releases:
-
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Send Releases to Telegram
-
         shell: bash
-
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           REPO: ${{ github.repository }}
-
         run: |
-
           set -euo pipefail
 
           SENT_FILE=".telegram_sent_releases"
@@ -37,20 +30,27 @@ jobs:
             touch "$SENT_FILE"
           fi
 
+          echo "========================================"
           echo "Getting GitHub Releases..."
+          echo "========================================"
 
-          RELEASES=$(gh api \
+          gh api \
             "repos/$REPO/releases?per_page=100" \
-            --paginate)
+            --paginate \
+            > releases.json
 
-          TOTAL=$(echo "$RELEASES" | jq 'length')
+          TOTAL=$(jq 'length' releases.json)
 
           echo "Total releases found: $TOTAL"
+          echo ""
 
-          echo "$RELEASES" | jq -c 'reverse[]' | while IFS= read -r RELEASE
+          jq -c 'reverse[]' releases.json > releases_list.txt
+
+          while IFS= read -r RELEASE
           do
-
             TAG=$(echo "$RELEASE" | jq -r '.tag_name')
+            TITLE=$(echo "$RELEASE" | jq -r '.name')
+            RELEASE_URL=$(echo "$RELEASE" | jq -r '.html_url')
 
             echo "----------------------------------------"
             echo "Checking: $TAG"
@@ -60,14 +60,14 @@ jobs:
               continue
             fi
 
-            TITLE=$(echo "$RELEASE" | jq -r '.name')
+            ASSET_COUNT=$(echo "$RELEASE" | jq '.assets | length')
 
-            DOWNLOAD_URL=$(echo "$RELEASE" | jq -r '.assets[0].browser_download_url')
-
-            if [ "$DOWNLOAD_URL" = "null" ] || [ -z "$DOWNLOAD_URL" ]; then
-              echo "No asset found: $TAG"
+            if [ "$ASSET_COUNT" -eq 0 ]; then
+              echo "No assets found: $TAG"
               continue
             fi
+
+            echo "Assets found: $ASSET_COUNT"
 
             SIZE=$(echo "$RELEASE" | jq '[.assets[].size] | add // 0')
 
@@ -79,13 +79,25 @@ jobs:
 
             SYMBOL=$(echo "$TITLE" | awk '{print $1}')
 
-            TEXT="📦 <b>${SYMBOL} Tick Data</b>
+            if [ -z "$FROM" ]; then
+              FROM="N/A"
+            fi
+
+            if [ -z "$TO" ]; then
+              TO="N/A"
+            fi
+
+            if [ -z "$SYMBOL" ]; then
+              SYMBOL="TICK"
+            fi
+
+            TEXT="📦 ${SYMBOL} Tick Data
 ━━━━━━━━━━━━━━━━
 📅 ${FROM} → ${TO}
 💾 Size: ${SIZE_MB} MB"
 
             KEYBOARD=$(jq -n \
-              --arg url "$DOWNLOAD_URL" \
+              --arg url "$RELEASE_URL" \
               '{
                 inline_keyboard: [
                   [
@@ -104,9 +116,8 @@ jobs:
               '{
                 chat_id: $chat,
                 text: $text,
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                reply_markup: $keyboard
+                reply_markup: $keyboard,
+                disable_web_page_preview: true
               }')
 
             echo "Sending to Telegram: $TAG"
@@ -120,7 +131,7 @@ jobs:
             echo "Telegram response:"
             echo "$RESPONSE" | jq .
 
-            OK=$(echo "$RESPONSE" | jq -r '.ok')
+            OK=$(echo "$RESPONSE" | jq -r '.ok // false')
 
             if [ "$OK" = "true" ]; then
 
@@ -132,19 +143,28 @@ jobs:
 
               echo "Telegram send failed: $TAG"
 
+              RETRY_AFTER=$(echo "$RESPONSE" | jq -r '.parameters.retry_after // 0')
+
+              if [ "$RETRY_AFTER" -gt 0 ]; then
+                echo "Telegram rate limit. Waiting ${RETRY_AFTER} seconds..."
+                sleep "$RETRY_AFTER"
+              fi
+
             fi
 
+            echo "Waiting 3 seconds..."
             sleep 3
 
-          done
+          done < releases_list.txt
 
+          echo ""
+          echo "========================================"
+          echo "Finished sending releases."
+          echo "========================================"
 
       - name: Save sent releases list
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
           if git diff --quiet -- .telegram_sent_releases; then
@@ -152,8 +172,7 @@ jobs:
             exit 0
           fi
 
-          git config user.name "github-actions"
-
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add .telegram_sent_releases
