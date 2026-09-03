@@ -1,93 +1,17 @@
-name: Download Dukascopy Tick Data
+name: Send Existing Releases To Telegram
 
 on:
   workflow_dispatch:
-    inputs:
-      instrument:
-        description: "Instrument (EURUSD, GBPUSD, USDJPY, XAUUSD)"
-        required: true
-        default: "EURUSD"
-
-      from:
-        description: "Start date YYYY-MM-DD"
-        required: true
-        default: "2020-01-01"
-
-      to:
-        description: "End date YYYY-MM-DD"
-        required: true
-        default: "2025-12-31"
 
 permissions:
   contents: write
 
+
 jobs:
 
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      instrument: ${{ steps.meta.outputs.instrument }}
-      instrument_upper: ${{ steps.meta.outputs.instrument_upper }}
-      from_date: ${{ steps.meta.outputs.from_date }}
-      to_date: ${{ steps.meta.outputs.to_date }}
-      years: ${{ steps.meta.outputs.years }}
-
-    steps:
-      - name: Prepare inputs and year list
-        id: meta
-        shell: bash
-        env:
-          RAW_INSTRUMENT: ${{ inputs.instrument }}
-          RAW_FROM: ${{ inputs.from }}
-          RAW_TO: ${{ inputs.to }}
-
-        run: |
-          set -euo pipefail
-
-          INSTRUMENT=$(printf '%s' "$RAW_INSTRUMENT" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
-          INSTRUMENT_LOWER=$(printf '%s' "$INSTRUMENT" | tr '[:upper:]' '[:lower:]')
-
-          FROM_DATE=$(printf '%s' "$RAW_FROM" | cut -d' ' -f1)
-          TO_DATE=$(printf '%s' "$RAW_TO" | cut -d' ' -f1)
-
-          FROM_YEAR=$(date -d "$FROM_DATE" +%Y)
-          TO_YEAR=$(date -d "$TO_DATE" +%Y)
-
-          YEARS="["
-          FIRST=1
-
-          for ((y=FROM_YEAR;y<=TO_YEAR;y++)); do
-            if [ $FIRST -eq 1 ]; then
-              YEARS="${YEARS}\"${y}\""
-              FIRST=0
-            else
-              YEARS="${YEARS},\"${y}\""
-            fi
-          done
-
-          YEARS="${YEARS}]"
-
-          echo "instrument=$INSTRUMENT_LOWER" >> $GITHUB_OUTPUT
-          echo "instrument_upper=$INSTRUMENT" >> $GITHUB_OUTPUT
-          echo "from_date=$FROM_DATE" >> $GITHUB_OUTPUT
-          echo "to_date=$TO_DATE" >> $GITHUB_OUTPUT
-          echo "years=$YEARS" >> $GITHUB_OUTPUT
-
-
-  download-year:
-
-    needs: prepare
+  send-releases:
 
     runs-on: ubuntu-latest
-
-    timeout-minutes: 350
-
-    strategy:
-      fail-fast: false
-
-      matrix:
-        year: ${{ fromJson(needs.prepare.outputs.years) }}
-
 
     steps:
 
@@ -95,241 +19,165 @@ jobs:
         uses: actions/checkout@v4
 
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-
-      - name: Calculate year range
-        id: range
-        shell: bash
-
-        env:
-          OVERALL_FROM: ${{ needs.prepare.outputs.from_date }}
-          OVERALL_TO: ${{ needs.prepare.outputs.to_date }}
-          YEAR: ${{ matrix.year }}
-
-        run: |
-
-          set -euo pipefail
-
-          YEAR_START="${YEAR}-01-01"
-          YEAR_END="${YEAR}-12-31"
-
-
-          if [[ "$(date -d "$OVERALL_FROM" +%Y)" -eq "$YEAR" ]]; then
-            FROM_DATE="$OVERALL_FROM"
-          else
-            FROM_DATE="$YEAR_START"
-          fi
-
-
-          if [[ "$(date -d "$OVERALL_TO" +%Y)" -eq "$YEAR" ]]; then
-            TO_DATE="$OVERALL_TO"
-          else
-            TO_DATE="$YEAR_END"
-          fi
-
-
-          INSTRUMENT="${{ needs.prepare.outputs.instrument }}"
-
-          SLUG="${INSTRUMENT}-ticks-${FROM_DATE}-to-${TO_DATE}"
-
-
-          echo "from_date=$FROM_DATE" >> $GITHUB_OUTPUT
-          echo "to_date=$TO_DATE" >> $GITHUB_OUTPUT
-          echo "slug=$SLUG" >> $GITHUB_OUTPUT
-          echo "instrument=$INSTRUMENT" >> $GITHUB_OUTPUT
-          echo "instrument_upper=${{ needs.prepare.outputs.instrument_upper }}" >> $GITHUB_OUTPUT
-
-
-
-      - name: Download ticks
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          mkdir -p download
-
-
-          npx -y dukascopy-node \
-            -i "${{ steps.range.outputs.instrument }}" \
-            -from "${{ steps.range.outputs.from_date }}" \
-            -to "${{ steps.range.outputs.to_date }}" \
-            -t tick \
-            -f csv \
-            -dir "./download"
-
-
-
-      - name: Find downloaded CSV
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          CSV_FILE=$(find download -type f -name "*.csv" | head -n 1)
-
-          if [ -z "$CSV_FILE" ]; then
-            exit 1
-          fi
-
-
-          cp "$CSV_FILE" "${{ steps.range.outputs.slug }}.csv"
-
-
-
-      - name: Convert CSV to JForex format
-
-        shell: bash
-
-        run: |
-
-          python convert.py "${{ steps.range.outputs.slug }}.csv"
-
-
-
-      - name: Zip CSV
-
-        shell: bash
-
-        run: |
-
-          zip -9 -j \
-          "${{ steps.range.outputs.slug }}.zip" \
-          "${{ steps.range.outputs.slug }}.csv"
-
-
-
-      - name: Split ZIP if larger than 1.9GB
-
-        shell: bash
-
-        run: |
-
-          FILE="${{ steps.range.outputs.slug }}.zip"
-
-          SIZE=$(stat -c%s "$FILE")
-
-          LIMIT=$((1900 * 1024 * 1024))
-
-
-          if [ "$SIZE" -gt "$LIMIT" ]; then
-
-            split -b 1900M "$FILE" "${FILE}."
-
-            rm "$FILE"
-
-          fi
-
-
-
-      - name: Publish to GitHub Release
-
-        uses: softprops/action-gh-release@v2
-
-        with:
-
-          tag_name: ${{ steps.range.outputs.slug }}
-
-          name: ${{ steps.range.outputs.instrument_upper }} ticks ${{ steps.range.outputs.from_date }} to ${{ steps.range.outputs.to_date }}
-
-          generate_release_notes: false
-
-          files: |
-
-            ./${{ steps.range.outputs.slug }}.zip
-
-            ./${{ steps.range.outputs.slug }}.zip.*
-
-
-
-      - name: Send Release link to Telegram
+      - name: Send Releases to Telegram
 
         shell: bash
 
         env:
-
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
           REPO: ${{ github.repository }}
 
-          TAG: ${{ steps.range.outputs.slug }}
-
-          SYMBOL: ${{ steps.range.outputs.instrument_upper }}
-
-          FROM_DATE: ${{ steps.range.outputs.from_date }}
-
-          TO_DATE: ${{ steps.range.outputs.to_date }}
-
-
         run: |
 
           set -euo pipefail
 
 
-          RELEASE=$(gh api \
-          repos/$REPO/releases/tags/$TAG)
+          SENT_FILE=".telegram_sent_releases"
 
 
-          DOWNLOAD_URL=$(echo "$RELEASE" | jq -r '.assets[0].browser_download_url')
+          if [ ! -f "$SENT_FILE" ]; then
+            touch "$SENT_FILE"
+          fi
 
 
-          SIZE=$(echo "$RELEASE" | jq '[.assets[].size] | add')
+          RELEASES=$(gh api \
+          "repos/$REPO/releases?per_page=100" \
+          --paginate \
 
 
-          SIZE_MB=$(awk "BEGIN {printf \"%.0f\", $SIZE/1024/1024}")
+          echo "Total releases:"
+          echo "$RELEASES" | jq length
 
 
-          TEXT="📦 <b>${SYMBOL} Tick Data</b>%0A"
-          TEXT+="━━━━━━━━━━━━━━━━%0A"
-          TEXT+="📅 ${FROM_DATE} → ${TO_DATE}%0A"
-          TEXT+="💾 Size: ${SIZE_MB} MB"
+          echo "$RELEASES" | jq -c 'reverse[]' | while read RELEASE
+          do
+
+            TAG=$(echo "$RELEASE" | jq -r '.tag_name')
 
 
-          KEYBOARD=$(jq -n \
-          --arg url "$DOWNLOAD_URL" \
-          '{
-            inline_keyboard:
-            [
+            if grep -Fxq "$TAG" "$SENT_FILE"; then
+              echo "Already sent: $TAG"
+              continue
+            fi
+
+
+            TITLE=$(echo "$RELEASE" | jq -r '.name')
+
+
+            DOWNLOAD_URL=$(echo "$RELEASE" | jq -r '.assets[0].browser_download_url')
+
+
+            if [ "$DOWNLOAD_URL" = "null" ]; then
+              echo "No asset: $TAG"
+              continue
+            fi
+
+
+            SIZE=$(echo "$RELEASE" | jq '[.assets[].size] | add')
+
+
+            SIZE_MB=$(awk "BEGIN {printf \"%.0f\", $SIZE/1024/1024}")
+
+
+            FROM=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+
+            TO=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1)
+
+
+            SYMBOL=$(echo "$TITLE" | awk '{print $1}')
+
+
+            TEXT="📦 <b>${SYMBOL} Tick Data</b>%0A"
+            TEXT+="━━━━━━━━━━━━━━━━%0A"
+            TEXT+="📅 ${FROM} → ${TO}%0A"
+            TEXT+="💾 Size: ${SIZE_MB} MB"
+
+
+            KEYBOARD=$(jq -n \
+            --arg url "$DOWNLOAD_URL" \
+            '{
+              inline_keyboard:
               [
-                {
-                  text:"⬇️ DOWNLOAD",
-                  url:$url
-                }
+                [
+                  {
+                    text:"⬇️ DOWNLOAD",
+                    url:$url
+                  }
+                ]
               ]
-            ]
-          }')
+            }')
 
 
-          curl -sS \
-          -X POST \
-          "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-          -H "Content-Type: application/json" \
-          -d "$(jq -n \
+            JSON=$(jq -n \
           --arg chat "$TELEGRAM_CHAT_ID" \
           --arg text "$TEXT" \
           --argjson kb "$KEYBOARD" \
           '{
-            chat_id:$chat,
-            text:$text,
-            parse_mode:"HTML",
-            disable_web_page_preview:true,
-            reply_markup:$kb
-          }')"
+            chat_id: $chat,
+            text: $text,
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+            reply_markup: $kb
+          }'
+          )
+
+
+          RESPONSE=$(curl -sS \
+            -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$JSON")
+
+
+            echo "$RESPONSE" | jq
+
+
+            OK=$(echo "$RESPONSE" | jq -r '.ok')
+
+
+            if [ "$OK" = "true" ]; then
+
+              echo "$TAG" >> "$SENT_FILE"
+
+              echo "Sent and saved: $TAG"
+
+            else
+
+              echo "Telegram send failed: $TAG"
+
+            fi
+
+
+            sleep 3
+
+
+          done
+
+
+
+      - name: Save sent releases list
+
+        shell: bash
+
+        run: |
+
+          if git diff --quiet .telegram_sent_releases; then
+            echo "No changes"
+            exit 0
+          fi
+
+
+          git config user.name "github-actions"
+
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+
+          git add .telegram_sent_releases
+
+
+          git commit -m "Update sent Telegram releases list"
+
+
+          git push
