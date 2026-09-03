@@ -28,9 +28,14 @@
         run: |
           set -euo pipefail
 
-          # ====================================================
+          echo "=========================================="
+          echo "Starting ordered Telegram sending"
+          echo "=========================================="
+
+
+          # ----------------------------------------------------
           # Check Telegram secrets
-          # ====================================================
+          # ----------------------------------------------------
 
           if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
             echo "ERROR: TELEGRAM_BOT_TOKEN is missing."
@@ -43,37 +48,34 @@
           fi
 
 
-          # ====================================================
-          # Calculate first and last year
-          # ====================================================
+          # ----------------------------------------------------
+          # Calculate years
+          # ----------------------------------------------------
 
           FROM_YEAR=$(date -d "$OVERALL_FROM" +%Y)
           TO_YEAR=$(date -d "$OVERALL_TO" +%Y)
 
 
-          echo "=============================================="
-          echo "Telegram ordered sending"
           echo "Instrument : $INSTRUMENT_UPPER"
           echo "From       : $OVERALL_FROM"
           echo "To         : $OVERALL_TO"
           echo "Years      : $FROM_YEAR -> $TO_YEAR"
-          echo "=============================================="
 
 
-          # ====================================================
-          # Send years one by one
-          # ====================================================
+          # ----------------------------------------------------
+          # Send years in chronological order
+          # ----------------------------------------------------
 
           for ((YEAR=FROM_YEAR; YEAR<=TO_YEAR; YEAR++)); do
 
             echo ""
-            echo "=============================================="
-            echo "Preparing year: $YEAR"
-            echo "=============================================="
+            echo "=========================================="
+            echo "Processing year: $YEAR"
+            echo "=========================================="
 
 
             # --------------------------------------------------
-            # Calculate yearly dates
+            # Calculate yearly range
             # --------------------------------------------------
 
             YEAR_START="${YEAR}-01-01"
@@ -111,108 +113,79 @@
 
             TAG="${INSTRUMENT}-ticks-${FROM_DATE}-to-${TO_DATE}"
 
-
-            echo "Year       : $YEAR"
-            echo "From       : $FROM_DATE"
-            echo "To         : $TO_DATE"
-            echo "Release tag: $TAG"
-
-
-            # ==================================================
-            # Get release information
-            # ==================================================
-
-            RELEASE_JSON=$(gh release view "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --json assets)
-
-
-            if [ -z "$RELEASE_JSON" ]; then
-              echo "ERROR: Release not found: $TAG"
-              exit 1
-            fi
-
-
-            # ==================================================
-            # Find ZIP asset
-            # ==================================================
-
             ASSET_NAME="${TAG}.zip"
 
 
-            ASSET_URL=$(echo "$RELEASE_JSON" | python3 -c '
-import sys
-import json
-
-data = json.load(sys.stdin)
-
-target = sys.argv[1]
-
-for asset in data.get("assets", []):
-    if asset.get("name") == target:
-        print(asset.get("url", ""))
-        break
-' "$ASSET_NAME")
+            echo "From       : $FROM_DATE"
+            echo "To         : $TO_DATE"
+            echo "Release    : $TAG"
+            echo "Asset      : $ASSET_NAME"
 
 
-            # ==================================================
-            # Find split ZIP parts if original ZIP does not exist
-            # ==================================================
+            # --------------------------------------------------
+            # Check that release exists
+            # --------------------------------------------------
+
+            if ! gh release view "$TAG" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+
+              echo "ERROR: Release does not exist:"
+              echo "$TAG"
+
+              exit 1
+
+            fi
+
+
+            # --------------------------------------------------
+            # Get normal ZIP asset URL
+            # --------------------------------------------------
+
+            ASSET_URL=$(gh release view "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .url" \
+              | head -n 1)
+
+
+            # --------------------------------------------------
+            # Check for split files
+            # --------------------------------------------------
 
             if [ -z "$ASSET_URL" ]; then
 
-              echo "Original ZIP not found."
+              echo "Normal ZIP not found."
 
-              echo "Checking split ZIP parts..."
-
-
-              PARTS=$(echo "$RELEASE_JSON" | python3 -c '
-import sys
-import json
-
-data = json.load(sys.stdin)
-
-target = sys.argv[1]
-
-for asset in data.get("assets", []):
-    name = asset.get("name", "")
-    if name.startswith(target + "."):
-        print(name)
-' "$ASSET_NAME")
+              PART_COUNT=$(gh release view "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json assets \
+                --jq "[.assets[] | select(.name | startswith(\"$ASSET_NAME.\"))] | length")
 
 
-              if [ -z "$PARTS" ]; then
-                echo "ERROR: No ZIP asset found for:"
-                echo "$TAG"
+              if [ "$PART_COUNT" -eq 0 ]; then
+
+                echo "ERROR: No ZIP or split ZIP files found."
+
                 exit 1
+
               fi
 
 
-              echo "Split files found:"
-              echo "$PARTS"
+              echo "Found $PART_COUNT split ZIP parts."
 
 
               # ------------------------------------------------
-              # Use first split part as download URL
+              # Use first part as download link
               # ------------------------------------------------
 
-              FIRST_PART=$(echo "$PARTS" | head -n 1)
+              FIRST_PART=$(gh release view "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json assets \
+                --jq ".assets[] | select(.name | startswith(\"$ASSET_NAME.\")) | .url" \
+                | head -n 1)
 
 
-              ASSET_URL=$(echo "$RELEASE_JSON" | python3 -c '
-import sys
-import json
-
-data = json.load(sys.stdin)
-
-target = sys.argv[1]
-
-for asset in data.get("assets", []):
-    if asset.get("name") == target:
-        print(asset.get("url", ""))
-        break
-' "$FIRST_PART")
-
+              ASSET_URL="$FIRST_PART"
 
               DOWNLOAD_TEXT="⬇️ DOWNLOAD PARTS"
 
@@ -223,23 +196,15 @@ for asset in data.get("assets", []):
             fi
 
 
-            # ==================================================
+            # --------------------------------------------------
             # Get file size
-            # ==================================================
+            # --------------------------------------------------
 
-            ASSET_SIZE=$(echo "$RELEASE_JSON" | python3 -c '
-import sys
-import json
-
-data = json.load(sys.stdin)
-
-target = sys.argv[1]
-
-for asset in data.get("assets", []):
-    if asset.get("name") == target:
-        print(asset.get("size", 0))
-        break
-' "$ASSET_NAME")
+            ASSET_SIZE=$(gh release view "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .size" \
+              | head -n 1)
 
 
             if [ -z "$ASSET_SIZE" ]; then
@@ -248,12 +213,12 @@ for asset in data.get("assets", []):
 
 
             FILE_SIZE_MB=$(awk \
-              "BEGIN {printf \"%.2f\", $ASSET_SIZE / 1024 / 1024}"
+              "BEGIN {printf \"%.2f\", $ASSET_SIZE / 1024 / 1024}")
 
 
-            # ==================================================
-            # Telegram caption
-            # ==================================================
+            # --------------------------------------------------
+            # Create Telegram message
+            # --------------------------------------------------
 
             CAPTION=$(printf \
               '<b>📦 %s Tick Data</b>\n━━━━━━━━━━━━━━━━\n📅 %s → %s\n💾 Size: %s MB' \
@@ -263,37 +228,22 @@ for asset in data.get("assets", []):
               "$FILE_SIZE_MB")
 
 
-            # ==================================================
-            # Telegram inline keyboard
-            # ==================================================
+            # --------------------------------------------------
+            # Create Telegram keyboard
+            # --------------------------------------------------
 
-            KEYBOARD=$(python3 -c '
-import json
-import os
-
-keyboard = {
-    "inline_keyboard": [
-        [
-            {
-                "text": os.environ["DOWNLOAD_TEXT"],
-                "url": os.environ["ASSET_URL"]
-            }
-        ]
-    ]
-}
-
-print(json.dumps(keyboard, ensure_ascii=False))
-' \
-              DOWNLOAD_TEXT="$DOWNLOAD_TEXT" \
-              ASSET_URL="$ASSET_URL")
+            KEYBOARD=$(printf \
+              '{"inline_keyboard":[[{"text":"%s","url":"%s"}]]}' \
+              "$DOWNLOAD_TEXT" \
+              "$ASSET_URL")
 
 
-            # ==================================================
+            # --------------------------------------------------
             # Send Telegram message
-            # ==================================================
+            # --------------------------------------------------
 
             echo ""
-            echo "Sending year $YEAR to Telegram..."
+            echo "Sending $YEAR to Telegram..."
 
 
             RESPONSE=$(curl -fsS \
@@ -311,9 +261,9 @@ print(json.dumps(keyboard, ensure_ascii=False))
             echo "$RESPONSE"
 
 
-            # ==================================================
-            # Check Telegram result
-            # ==================================================
+            # --------------------------------------------------
+            # Check Telegram response
+            # --------------------------------------------------
 
             if ! echo "$RESPONSE" | grep -q '"ok":true'; then
 
@@ -327,9 +277,9 @@ print(json.dumps(keyboard, ensure_ascii=False))
             echo "✅ Year $YEAR sent successfully."
 
 
-            # ==================================================
-            # Wait before next message
-            # ==================================================
+            # --------------------------------------------------
+            # Wait before next year
+            # --------------------------------------------------
 
             sleep 2
 
@@ -337,6 +287,6 @@ print(json.dumps(keyboard, ensure_ascii=False))
 
 
           echo ""
-          echo "=============================================="
+          echo "=========================================="
           echo "✅ ALL YEARS SENT TO TELEGRAM"
-          echo "=============================================="
+          echo "=========================================="
