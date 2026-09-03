@@ -35,7 +35,7 @@ jobs:
           --paginate)
 
 
-          echo "$RELEASES" | jq -c '.[]' | while read RELEASE
+          echo "$RELEASES" | jq -c 'reverse[]' | while read RELEASE
           do
 
             TAG=$(echo "$RELEASE" | jq -r '.tag_name')
