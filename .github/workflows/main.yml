@@ -135,7 +135,7 @@ jobs:
           set -euo pipefail
 
           YEAR_START="${YEAR}-01-01"
-          YEAR_END="${YEAR}-12-31"
+          YEAR_END=$(date -d "$YEAR_START +1 year" +%Y-%m-%d)
 
           # Clip start
           if [[ "$(date -d "$OVERALL_FROM" +%Y)" -eq "$YEAR" ]]; then
