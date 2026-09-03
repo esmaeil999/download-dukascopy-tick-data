@@ -43,9 +43,8 @@ jobs:
 
 
           RELEASES=$(gh api \
-          repos/$REPO/releases \
+          "repos/$REPO/releases?per_page=100" \
           --paginate \
-          -F per_page=100)
 
 
           echo "Total releases:"
