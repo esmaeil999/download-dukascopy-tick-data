@@ -7,21 +7,27 @@ permissions:
   contents: write
 
 jobs:
+
   send-releases:
+
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Send Releases to Telegram
         shell: bash
+
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           REPO: ${{ github.repository }}
+
         run: |
+
           set -euo pipefail
 
           SENT_FILE=".telegram_sent_releases"
@@ -30,76 +36,53 @@ jobs:
             touch "$SENT_FILE"
           fi
 
-          echo "========================================"
-          echo "Getting GitHub Releases..."
-          echo "========================================"
-
-          gh api \
+          RELEASES=$(gh api \
             "repos/$REPO/releases?per_page=100" \
-            --paginate \
-            > releases.json
+            --paginate)
 
-          TOTAL=$(jq 'length' releases.json)
+          echo "Total releases:"
+          echo "$RELEASES" | jq length
 
-          echo "Total releases found: $TOTAL"
-          echo ""
-
-          jq -c 'reverse[]' releases.json > releases_list.txt
-
-          while IFS= read -r RELEASE
+          echo "$RELEASES" | jq -c 'reverse[]' | while read -r RELEASE
           do
-            TAG=$(echo "$RELEASE" | jq -r '.tag_name')
-            TITLE=$(echo "$RELEASE" | jq -r '.name')
-            RELEASE_URL=$(echo "$RELEASE" | jq -r '.html_url')
 
-            echo "----------------------------------------"
-            echo "Checking: $TAG"
+            TAG=$(echo "$RELEASE" | jq -r '.tag_name')
 
             if grep -Fxq "$TAG" "$SENT_FILE"; then
               echo "Already sent: $TAG"
               continue
             fi
 
-            ASSET_COUNT=$(echo "$RELEASE" | jq '.assets | length')
+            TITLE=$(echo "$RELEASE" | jq -r '.name')
 
-            if [ "$ASSET_COUNT" -eq 0 ]; then
-              echo "No assets found: $TAG"
+            DOWNLOAD_URL=$(echo "$RELEASE" | jq -r '.assets[0].browser_download_url')
+
+            if [ "$DOWNLOAD_URL" = "null" ]; then
+              echo "No asset: $TAG"
               continue
             fi
 
-            echo "Assets found: $ASSET_COUNT"
-
-            SIZE=$(echo "$RELEASE" | jq '[.assets[].size] | add // 0')
+            SIZE=$(echo "$RELEASE" | jq '[.assets[].size] | add')
 
             SIZE_MB=$(awk "BEGIN {printf \"%.0f\", $SIZE/1024/1024}")
 
-            FROM=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)
+            DATES=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || true)
 
-            TO=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1 || true)
+            FROM=$(echo "$DATES" | head -1)
+            TO=$(echo "$DATES" | tail -1)
 
             SYMBOL=$(echo "$TITLE" | awk '{print $1}')
 
-            if [ -z "$FROM" ]; then
-              FROM="N/A"
-            fi
-
-            if [ -z "$TO" ]; then
-              TO="N/A"
-            fi
-
-            if [ -z "$SYMBOL" ]; then
-              SYMBOL="TICK"
-            fi
-
-            TEXT="📦 ${SYMBOL} Tick Data
-━━━━━━━━━━━━━━━━
-📅 ${FROM} → ${TO}
-💾 Size: ${SIZE_MB} MB"
+            TEXT="📦 <b>${SYMBOL} Tick Data</b>%0A"
+            TEXT+="━━━━━━━━━━━━━━━━%0A"
+            TEXT+="📅 ${FROM} → ${TO}%0A"
+            TEXT+="💾 Size: ${SIZE_MB} MB"
 
             KEYBOARD=$(jq -n \
-              --arg url "$RELEASE_URL" \
+              --arg url "$DOWNLOAD_URL" \
               '{
-                inline_keyboard: [
+                inline_keyboard:
+                [
                   [
                     {
                       text: "⬇️ DOWNLOAD",
@@ -112,15 +95,14 @@ jobs:
             JSON=$(jq -n \
               --arg chat "$TELEGRAM_CHAT_ID" \
               --arg text "$TEXT" \
-              --argjson keyboard "$KEYBOARD" \
+              --argjson kb "$KEYBOARD" \
               '{
                 chat_id: $chat,
                 text: $text,
-                reply_markup: $keyboard,
-                disable_web_page_preview: true
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+                reply_markup: $kb
               }')
-
-            echo "Sending to Telegram: $TAG"
 
             RESPONSE=$(curl -sS \
               -X POST \
@@ -129,50 +111,38 @@ jobs:
               -d "$JSON")
 
             echo "Telegram response:"
-            echo "$RESPONSE" | jq .
+            echo "$RESPONSE" | jq
 
-            OK=$(echo "$RESPONSE" | jq -r '.ok // false')
+            OK=$(echo "$RESPONSE" | jq -r '.ok')
 
             if [ "$OK" = "true" ]; then
 
               echo "$TAG" >> "$SENT_FILE"
 
-              echo "Successfully sent: $TAG"
+              echo "Sent and saved: $TAG"
 
             else
 
               echo "Telegram send failed: $TAG"
-
-              RETRY_AFTER=$(echo "$RESPONSE" | jq -r '.parameters.retry_after // 0')
-
-              if [ "$RETRY_AFTER" -gt 0 ]; then
-                echo "Telegram rate limit. Waiting ${RETRY_AFTER} seconds..."
-                sleep "$RETRY_AFTER"
-              fi
+              echo "$RESPONSE" | jq
 
             fi
 
-            echo "Waiting 3 seconds..."
             sleep 3
 
-          done < releases_list.txt
-
-          echo ""
-          echo "========================================"
-          echo "Finished sending releases."
-          echo "========================================"
+          done
 
       - name: Save sent releases list
         shell: bash
-        run: |
-          set -euo pipefail
 
-          if git diff --quiet -- .telegram_sent_releases; then
-            echo "No changes to save."
+        run: |
+
+          if git diff --quiet .telegram_sent_releases; then
+            echo "No changes"
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
+          git config user.name "github-actions"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add .telegram_sent_releases
