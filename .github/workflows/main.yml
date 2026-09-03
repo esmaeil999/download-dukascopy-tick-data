@@ -51,16 +51,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          INSTRUMENT=$(printf '%s' "$RAW_INSTRUMENT" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+          INSTRUMENT=$(printf '%s' "$RAW_INSTRUMENT" \
+            | tr '[:lower:]' '[:upper:]' \
+            | tr -d '[:space:]')
 
-          INSTRUMENT_LOWER=$(printf '%s' "$INSTRUMENT" | tr '[:upper:]' '[:lower:]')
+          INSTRUMENT_LOWER=$(printf '%s' "$INSTRUMENT" \
+            | tr '[:upper:]' '[:lower:]')
 
           FROM_DATE=$(printf '%s' "$RAW_FROM" | cut -d' ' -f1)
-
           TO_DATE=$(printf '%s' "$RAW_TO" | cut -d' ' -f1)
 
-
+          # ------------------------------------------------------
           # Validate dates
+          # ------------------------------------------------------
 
           if ! date -d "$FROM_DATE" >/dev/null 2>&1; then
             echo "ERROR: Invalid from date: $FROM_DATE"
@@ -72,71 +75,49 @@ jobs:
             exit 1
           fi
 
-
           FROM_TS=$(date -d "$FROM_DATE" +%s)
-
           TO_TS=$(date -d "$TO_DATE" +%s)
-
 
           if [ "$FROM_TS" -gt "$TO_TS" ]; then
             echo "ERROR: from date is after to date"
             exit 1
           fi
 
-
           FROM_YEAR=$(date -d "$FROM_DATE" +%Y)
-
           TO_YEAR=$(date -d "$TO_DATE" +%Y)
 
-
+          # ------------------------------------------------------
           # Build JSON year array
+          # ------------------------------------------------------
 
           YEARS="["
-
           FIRST=1
 
           for ((y=FROM_YEAR; y<=TO_YEAR; y++)); do
 
             if [ "$FIRST" -eq 1 ]; then
-
               YEARS="${YEARS}\"${y}\""
-
               FIRST=0
-
             else
-
               YEARS="${YEARS},\"${y}\""
-
             fi
 
           done
 
           YEARS="${YEARS}]"
 
-
           echo "================================"
-
           echo "Instrument: $INSTRUMENT"
-
           echo "Dukascopy symbol: $INSTRUMENT_LOWER"
-
           echo "Overall From: $FROM_DATE"
-
           echo "Overall To:   $TO_DATE"
-
           echo "Years: $YEARS"
-
           echo "================================"
-
 
           echo "instrument=$INSTRUMENT_LOWER" >> "$GITHUB_OUTPUT"
-
           echo "instrument_upper=$INSTRUMENT" >> "$GITHUB_OUTPUT"
-
           echo "from_date=$FROM_DATE" >> "$GITHUB_OUTPUT"
-
           echo "to_date=$TO_DATE" >> "$GITHUB_OUTPUT"
-
           echo "years=$YEARS" >> "$GITHUB_OUTPUT"
 
 
@@ -145,7 +126,6 @@ jobs:
   # ============================================================
 
   download-year:
-
     needs: prepare
 
     runs-on: ubuntu-latest
@@ -158,12 +138,19 @@ jobs:
       matrix:
         year: ${{ fromJson(needs.prepare.outputs.years) }}
 
-
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
+      # ----------------------------------------------------------
+      # Node.js
+      # ----------------------------------------------------------
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -172,6 +159,10 @@ jobs:
           node-version: "24"
 
 
+      # ----------------------------------------------------------
+      # Python
+      # ----------------------------------------------------------
+
       - name: Setup Python
         uses: actions/setup-python@v5
 
@@ -179,9 +170,9 @@ jobs:
           python-version: "3.12"
 
 
-      # ========================================================
+      # ==========================================================
       # Calculate year range
-      # ========================================================
+      # ==========================================================
 
       - name: Calculate year range
         id: range
@@ -195,84 +186,63 @@ jobs:
         run: |
           set -euo pipefail
 
-
           YEAR_START="${YEAR}-01-01"
 
-          YEAR_END=$(date -d "${YEAR}-01-01 +1 year" +%Y-%m-%d)
+          YEAR_END=$(date \
+            -d "${YEAR}-01-01 +1 year" \
+            +%Y-%m-%d)
 
-
+          # ------------------------------------------------------
           # Start date
+          # ------------------------------------------------------
 
           if [ "$(date -d "$OVERALL_FROM" +%Y)" -eq "$YEAR" ]; then
-
             FROM_DATE="$OVERALL_FROM"
-
           else
-
             FROM_DATE="$YEAR_START"
-
           fi
 
-
+          # ------------------------------------------------------
           # End date
+          # ------------------------------------------------------
 
           if [ "$(date -d "$OVERALL_TO" +%Y)" -eq "$YEAR" ]; then
-
             TO_DATE="$OVERALL_TO"
-
           else
-
             TO_DATE="$YEAR_END"
-
           fi
 
-
+          # ------------------------------------------------------
           # Safety check
+          # ------------------------------------------------------
 
           if [ "$(date -d "$FROM_DATE" +%s)" -gt "$(date -d "$TO_DATE" +%s)" ]; then
-
             echo "ERROR: Invalid range"
-
             exit 1
-
           fi
 
-
           INSTRUMENT="${{ needs.prepare.outputs.instrument }}"
-
           INSTRUMENT_UPPER="${{ needs.prepare.outputs.instrument_upper }}"
-
 
           SLUG="${INSTRUMENT}-ticks-${FROM_DATE}-to-${TO_DATE}"
 
-
           echo "================================"
-
           echo "Year: $YEAR"
-
           echo "From: $FROM_DATE"
-
           echo "To: $TO_DATE"
-
           echo "Slug: $SLUG"
-
           echo "================================"
-
 
           echo "from_date=$FROM_DATE" >> "$GITHUB_OUTPUT"
-
           echo "to_date=$TO_DATE" >> "$GITHUB_OUTPUT"
-
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
-
           echo "instrument=$INSTRUMENT" >> "$GITHUB_OUTPUT"
-
           echo "instrument_upper=$INSTRUMENT_UPPER" >> "$GITHUB_OUTPUT"
 
 
-      # ========================================================
+      # ==========================================================
       # Download
-      # ========================================================
+      # ==========================================================
 
       - name: Download ticks
         shell: bash
@@ -282,11 +252,9 @@ jobs:
 
           mkdir -p download
 
-
           echo "Downloading Dukascopy tick data..."
 
           echo "${{ steps.range.outputs.from_date }} -> ${{ steps.range.outputs.to_date }}"
-
 
           npx -y dukascopy-node \
             -i "${{ steps.range.outputs.instrument }}" \
@@ -297,9 +265,9 @@ jobs:
             -dir "./download"
 
 
-      # ========================================================
+      # ==========================================================
       # Find CSV
-      # ========================================================
+      # ==========================================================
 
       - name: Find downloaded CSV
         shell: bash
@@ -307,36 +275,27 @@ jobs:
         run: |
           set -euo pipefail
 
-
           echo "Downloaded files:"
 
           find download -type f -print || true
 
-
           CSV_FILE=$(find download -type f -name "*.csv" | head -n 1)
 
-
           if [ -z "$CSV_FILE" ]; then
-
             echo "ERROR: No CSV file found."
-
             exit 1
-
           fi
-
 
           echo "CSV: $CSV_FILE"
 
-
           cp "$CSV_FILE" "${{ steps.range.outputs.slug }}.csv"
-
 
           ls -lh "${{ steps.range.outputs.slug }}.csv"
 
 
-      # ========================================================
+      # ==========================================================
       # Convert
-      # ========================================================
+      # ==========================================================
 
       - name: Convert CSV to JForex format
         shell: bash
@@ -344,25 +303,19 @@ jobs:
         run: |
           set -euo pipefail
 
-
           INPUT_FILE="${{ steps.range.outputs.slug }}.csv"
 
-
           if [ ! -f "$INPUT_FILE" ]; then
-
             echo "ERROR: CSV file not found."
-
             exit 1
-
           fi
-
 
           python convert.py "$INPUT_FILE"
 
 
-      # ========================================================
+      # ==========================================================
       # ZIP
-      # ========================================================
+      # ==========================================================
 
       - name: Zip CSV
         shell: bash
@@ -370,30 +323,22 @@ jobs:
         run: |
           set -euo pipefail
 
-
           CSV_FILE="${{ steps.range.outputs.slug }}.csv"
-
           ZIP_FILE="${{ steps.range.outputs.slug }}.zip"
 
-
           if [ ! -f "$CSV_FILE" ]; then
-
             echo "ERROR: CSV file not found."
-
             exit 1
-
           fi
 
-
           zip -9 -j "$ZIP_FILE" "$CSV_FILE"
-
 
           ls -lh "$ZIP_FILE"
 
 
-      # ========================================================
-      # Split
-      # ========================================================
+      # ==========================================================
+      # Split if larger than 1.9GB
+      # ==========================================================
 
       - name: Split ZIP if larger than 1.9GB
         shell: bash
@@ -401,44 +346,30 @@ jobs:
         run: |
           set -euo pipefail
 
-
           FILE="${{ steps.range.outputs.slug }}.zip"
 
-
           if [ ! -f "$FILE" ]; then
-
             echo "ERROR: ZIP file not found."
-
             exit 1
-
           fi
-
 
           SIZE=$(stat -c%s "$FILE")
 
           LIMIT=$((1900 * 1024 * 1024))
 
-
           echo "ZIP size: $SIZE bytes"
-
           echo "Limit: $LIMIT bytes"
-
 
           if [ "$SIZE" -gt "$LIMIT" ]; then
 
             echo "ZIP is larger than 1.9GB."
-
             echo "Splitting..."
-
 
             split -b 1900M "$FILE" "${FILE}."
 
-
             rm "$FILE"
 
-
             echo "Created parts:"
-
             ls -lh "${FILE}".*
 
           else
@@ -448,9 +379,9 @@ jobs:
           fi
 
 
-      # ========================================================
+      # ==========================================================
       # GitHub Release
-      # ========================================================
+      # ==========================================================
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -464,24 +395,24 @@ jobs:
           generate_release_notes: false
 
           files: |
-
             ./${{ steps.range.outputs.slug }}.zip
-
             ./${{ steps.range.outputs.slug }}.zip.*
 
 
   # ============================================================
   # 3) Send releases to Telegram
   #
-  # IMPORTANT:
-  # This job runs only after ALL download-year jobs finish.
+  # Downloads run in parallel.
   #
-  # Telegram order:
+  # Telegram messages are sent sequentially:
   #
   # 2020
   # 2021
   # 2022
+  # 2023
   # ...
+  #
+  # This job starts only after ALL download jobs finish.
   # ============================================================
 
   send-to-telegram:
@@ -513,136 +444,106 @@ jobs:
 
           INSTRUMENT_UPPER: ${{ needs.prepare.outputs.instrument_upper }}
 
-
         run: |
           set -euo pipefail
 
-
-          # ====================================================
+          # ======================================================
           # Check Telegram settings
-          # ====================================================
+          # ======================================================
 
           if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
-
             echo "ERROR: TELEGRAM_BOT_TOKEN is missing."
-
             exit 1
-
           fi
-
 
           if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
-
             echo "ERROR: TELEGRAM_CHAT_ID is missing."
-
             exit 1
-
           fi
 
 
-          # ====================================================
+          # ======================================================
           # Calculate years
-          # ====================================================
+          # ======================================================
 
           FROM_YEAR=$(date -d "$OVERALL_FROM" +%Y)
 
           TO_YEAR=$(date -d "$OVERALL_TO" +%Y)
 
-
           echo "=========================================="
-
           echo "Starting Telegram sending"
-
           echo "Instrument: $INSTRUMENT_UPPER"
-
           echo "From year: $FROM_YEAR"
-
           echo "To year: $TO_YEAR"
-
           echo "=========================================="
 
 
-          # ====================================================
+          # ======================================================
           # Send one year at a time
-          # ====================================================
+          # ======================================================
 
           for ((YEAR=FROM_YEAR; YEAR<=TO_YEAR; YEAR++)); do
 
-
             echo ""
-
             echo "=========================================="
-
             echo "Processing year: $YEAR"
-
             echo "=========================================="
 
 
-            # --------------------------------------------------
+            # ----------------------------------------------------
             # Calculate yearly range
-            # --------------------------------------------------
+            # ----------------------------------------------------
 
             YEAR_START="${YEAR}-01-01"
-
 
             YEAR_END=$(date \
               -d "${YEAR}-01-01 +1 year" \
               +%Y-%m-%d)
 
 
-            # --------------------------------------------------
+            # ----------------------------------------------------
             # Start date
-            # --------------------------------------------------
+            # ----------------------------------------------------
 
             if [ "$YEAR" -eq "$FROM_YEAR" ]; then
-
               FROM_DATE="$OVERALL_FROM"
-
             else
-
               FROM_DATE="$YEAR_START"
-
             fi
 
 
-            # --------------------------------------------------
+            # ----------------------------------------------------
             # End date
-            # --------------------------------------------------
+            # ----------------------------------------------------
 
             if [ "$YEAR" -eq "$TO_YEAR" ]; then
-
               TO_DATE="$OVERALL_TO"
-
             else
-
               TO_DATE="$YEAR_END"
-
             fi
 
 
-            # --------------------------------------------------
+            # ----------------------------------------------------
             # Release tag
-            # --------------------------------------------------
+            # ----------------------------------------------------
 
             TAG="${INSTRUMENT}-ticks-${FROM_DATE}-to-${TO_DATE}"
-
 
             ASSET_NAME="${TAG}.zip"
 
 
             echo "From: $FROM_DATE"
-
             echo "To:   $TO_DATE"
-
             echo "Tag:  $TAG"
 
 
-            # ==================================================
-            # Get Release
-            # ==================================================
+            # ====================================================
+            # Check Release
+            # ====================================================
 
             if ! gh release view "$TAG" \
-              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              --repo "$GITHUB_REPOSITORY" \
+              >/dev/null 2>&1; then
 
               echo "ERROR: Release not found: $TAG"
 
@@ -651,20 +552,38 @@ jobs:
             fi
 
 
-            # ==================================================
-            # Find ZIP asset
-            # ==================================================
+            # ====================================================
+            # Get Release JSON
+            # ====================================================
 
-            ASSET_URL=$(gh release view "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --json assets \
-              --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .url" \
-              | head -n 1)
+            RELEASE_JSON=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")
 
 
-            # ==================================================
+            # ====================================================
+            # Find normal ZIP
+            # ====================================================
+
+            ASSET_URL=$(echo "$RELEASE_JSON" | python3 -c '
+          import sys
+          import json
+
+          data = json.load(sys.stdin)
+          target = sys.argv[1]
+
+          for asset in data.get("assets", []):
+              if asset.get("name") == target:
+                  print(asset.get("browser_download_url", ""))
+                  break
+          ' "$ASSET_NAME")
+
+
+            DOWNLOAD_TEXT="⬇️ DOWNLOAD"
+
+
+            # ====================================================
             # If ZIP was split
-            # ==================================================
+            # ====================================================
 
             if [ -z "$ASSET_URL" ]; then
 
@@ -673,14 +592,29 @@ jobs:
               echo "Checking split parts..."
 
 
-              FIRST_PART_URL=$(gh release view "$TAG" \
-                --repo "$GITHUB_REPOSITORY" \
-                --json assets \
-                --jq ".assets[] | select(.name | startswith(\"$ASSET_NAME.\")) | .url" \
-                | head -n 1)
+              FIRST_PART=$(echo "$RELEASE_JSON" | python3 -c '
+          import sys
+          import json
+
+          data = json.load(sys.stdin)
+          target = sys.argv[1]
+
+          parts = []
+
+          for asset in data.get("assets", []):
+              name = asset.get("name", "")
+
+              if name.startswith(target + "."):
+                  parts.append(asset)
+
+          parts.sort(key=lambda x: x.get("name", ""))
+
+          if parts:
+              print(parts[0].get("browser_download_url", ""))
+          ' "$ASSET_NAME")
 
 
-              if [ -z "$FIRST_PART_URL" ]; then
+              if [ -z "$FIRST_PART" ]; then
 
                 echo "ERROR: No ZIP or split parts found."
 
@@ -689,33 +623,33 @@ jobs:
               fi
 
 
-              ASSET_URL="$FIRST_PART_URL"
+              ASSET_URL="$FIRST_PART"
 
               DOWNLOAD_TEXT="⬇️ DOWNLOAD PART 1"
-
-
-            else
-
-              DOWNLOAD_TEXT="⬇️ DOWNLOAD"
 
             fi
 
 
-            # ==================================================
-            # Get size
-            # ==================================================
+            # ====================================================
+            # Get asset size
+            # ====================================================
 
-            ASSET_SIZE=$(gh release view "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --json assets \
-              --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .size" \
-              | head -n 1)
+            ASSET_SIZE=$(echo "$RELEASE_JSON" | python3 -c '
+          import sys
+          import json
+
+          data = json.load(sys.stdin)
+          target = sys.argv[1]
+
+          for asset in data.get("assets", []):
+              if asset.get("name") == target:
+                  print(asset.get("size", 0))
+                  break
+          ' "$ASSET_NAME")
 
 
             if [ -z "$ASSET_SIZE" ]; then
-
               ASSET_SIZE=0
-
             fi
 
 
@@ -723,9 +657,9 @@ jobs:
               "BEGIN {printf \"%.2f\", $ASSET_SIZE / 1024 / 1024}")
 
 
-            # ==================================================
+            # ====================================================
             # Telegram caption
-            # ==================================================
+            # ====================================================
 
             CAPTION=$(printf \
               '<b>📦 %s Tick Data</b>\n━━━━━━━━━━━━━━━━\n📅 %s → %s\n💾 Size: %s MB' \
@@ -735,34 +669,37 @@ jobs:
               "$FILE_SIZE_MB")
 
 
-            # ==================================================
-            # Telegram keyboard
-            # ==================================================
+            # ====================================================
+            # Telegram inline keyboard
+            # ====================================================
 
             KEYBOARD=$(python3 -c '
-import json
-import os
+          import json
+          import sys
 
-data = {
-    "inline_keyboard": [
-        [
-            {
-                "text": os.environ["DOWNLOAD_TEXT"],
-                "url": os.environ["ASSET_URL"]
-            }
-        ]
-    ]
-}
+          text = sys.argv[1]
+          url = sys.argv[2]
 
-print(json.dumps(data, ensure_ascii=False))
-' \
-              DOWNLOAD_TEXT="$DOWNLOAD_TEXT" \
-              ASSET_URL="$ASSET_URL")
+          data = {
+              "inline_keyboard": [
+                  [
+                      {
+                          "text": text,
+                          "url": url
+                      }
+                  ]
+              ]
+          }
+
+          print(json.dumps(data, ensure_ascii=False))
+          ' \
+              "$DOWNLOAD_TEXT" \
+              "$ASSET_URL")
 
 
-            # ==================================================
+            # ====================================================
             # Send Telegram message
-            # ==================================================
+            # ====================================================
 
             echo ""
 
@@ -784,9 +721,9 @@ print(json.dumps(data, ensure_ascii=False))
             echo "$RESPONSE"
 
 
-            # ==================================================
-            # Check Telegram
-            # ==================================================
+            # ====================================================
+            # Check Telegram response
+            # ====================================================
 
             if ! echo "$RESPONSE" | grep -q '"ok":true'; then
 
@@ -800,12 +737,11 @@ print(json.dumps(data, ensure_ascii=False))
             echo "SUCCESS: $YEAR sent to Telegram."
 
 
-            # ==================================================
-            # Delay before next year
-            # ==================================================
+            # ====================================================
+            # Delay
+            # ====================================================
 
             sleep 2
-
 
           done
 
@@ -813,7 +749,5 @@ print(json.dumps(data, ensure_ascii=False))
           echo ""
 
           echo "=========================================="
-
           echo "ALL YEARS SENT SUCCESSFULLY"
-
           echo "=========================================="
