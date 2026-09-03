@@ -87,7 +87,7 @@ jobs:
             }')
 
 
-            curl -sS \
+            RESPONSE=$(curl -sS \
             -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -H "Content-Type: application/json" \
@@ -101,7 +101,12 @@ jobs:
               parse_mode:"HTML",
               disable_web_page_preview:true,
               reply_markup:$kb
-            }')"
+            }'
+            )")
+
+
+            echo "Telegram response:"
+            echo "$RESPONSE" | jq
 
 
             sleep 3
