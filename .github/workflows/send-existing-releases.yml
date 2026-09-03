@@ -1,0 +1,107 @@
+name: Send Existing Releases To Telegram
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+
+jobs:
+
+  send-releases:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Send GitHub Releases to Telegram
+
+        shell: bash
+
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPO: ${{ github.repository }}
+
+        run: |
+
+          set -euo pipefail
+
+
+          RELEASES=$(gh api \
+          repos/$REPO/releases \
+          --paginate)
+
+
+          echo "$RELEASES" | jq -c '.[]' | while read RELEASE
+          do
+
+            TAG=$(echo "$RELEASE" | jq -r '.tag_name')
+
+            TITLE=$(echo "$RELEASE" | jq -r '.name')
+
+            URL=$(echo "$RELEASE" | jq -r '.assets[0].browser_download_url')
+
+
+            SIZE=$(echo "$RELEASE" \
+            | jq '[.assets[].size] | add')
+
+
+            SIZE_MB=$(awk \
+            "BEGIN {printf \"%.0f\", $SIZE/1024/1024}")
+
+
+            if [ "$URL" = "null" ]; then
+              continue
+            fi
+
+
+            FROM=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+
+            TO=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1)
+
+
+            SYMBOL=$(echo "$TITLE" | awk '{print $1}')
+
+
+            TEXT="📦 <b>${SYMBOL} Tick Data</b>%0A"
+            TEXT+="━━━━━━━━━━━━━━━━%0A"
+            TEXT+="📅 ${FROM} → ${TO}%0A"
+            TEXT+="💾 Size: ${SIZE_MB} MB"
+
+
+            KEYBOARD=$(jq -n \
+            --arg url "$URL" \
+            '{
+              inline_keyboard:
+              [
+                [
+                  {
+                    text:"⬇️ DOWNLOAD",
+                    url:$url
+                  }
+                ]
+              ]
+            }')
+
+
+            curl -sS \
+            -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+            --arg chat "$TELEGRAM_CHAT_ID" \
+            --arg text "$TEXT" \
+            --argjson kb "$KEYBOARD" \
+            '{
+              chat_id:$chat,
+              text:$text,
+              parse_mode:"HTML",
+              disable_web_page_preview:true,
+              reply_markup:$kb
+            }')"
+
+
+          done
